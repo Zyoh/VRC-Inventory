@@ -75,47 +75,55 @@ namespace Merlin
                 }
             }
             
-            if (inventorySlots.Length + originalParams.Count > 16)
+            if (inventorySlots.Length + originalParams.Count > 128)
             {
-                Debug.LogError($"Cannot have more than {16 - originalParams.Count} inventory slots");
+                Debug.LogError($"Cannot have more than {128 - originalParams.Count} inventory slots");
                 return;
             }
 
             VRCExpressionParameters.Parameter[] basisParameters = inventoryStageParams.parameters;
-            inventoryStageParams.parameters = new VRCExpressionParameters.Parameter[16];
+            inventoryStageParams.parameters = new VRCExpressionParameters.Parameter[inventorySlots.Length];
 
             for (int i = 0; i < originalParams.Count; ++i) inventoryStageParams.parameters[i] = originalParams[i];
 
             for (int i = originalParams.Count; i < inventorySlots.Length + originalParams.Count; ++i)
-                inventoryStageParams.parameters[i] = new VRCExpressionParameters.Parameter() { name = $"GenInventorySlot{i - originalParams.Count}", valueType = VRCExpressionParameters.ValueType.Int };
+                inventoryStageParams.parameters[i] = new VRCExpressionParameters.Parameter() { name = $"GenInventorySlot{i - originalParams.Count}", valueType = VRCExpressionParameters.ValueType.Bool };
 
-            for (int i = originalParams.Count + inventorySlots.Length; i < 16; ++i) // Clear out empty params
-                inventoryStageParams.parameters[i] = new VRCExpressionParameters.Parameter() { name = "", valueType = VRCExpressionParameters.ValueType.Float };
+            // for (int i = originalParams.Count + inventorySlots.Length; i < 16; ++i) // Clear out empty params
+            //     inventoryStageParams.parameters[i] = new VRCExpressionParameters.Parameter() { name = "", valueType = VRCExpressionParameters.ValueType.Float };
 
             // Generate menu asset
-            VRCExpressionsMenu menuAsset;
-            string menuPath = $"{generatedDirPath}/expressionMenu.asset";
-            if (basisMenu)
-            {
-                AssetDatabase.CopyAsset(AssetDatabase.GetAssetPath(basisMenu), menuPath);
-                menuAsset = AssetDatabase.LoadAssetAtPath<VRCExpressionsMenu>(menuPath);
-            }
-            else
-            {
-                menuAsset = ScriptableObject.CreateInstance<VRCExpressionsMenu>();
-                AssetDatabase.CreateAsset(menuAsset, menuPath);
-            }
-            
-            for (int i = 0; i < inventorySlots.Length; ++i)
-            {
-                menuAsset.controls.Add(new VRCExpressionsMenu.Control()
+            for (int menuNum = 0; menuNum < 8; ++menuNum) {
+                VRCExpressionsMenu menuAsset;
+                string menuPath = $"{generatedDirPath}/expressionMenu{menuNum}.asset";
+                if (basisMenu)
                 {
-                    icon = inventorySlots[i].slotIcon,
-                    name = inventorySlots[i].slotName,
-                    parameter = new VRCExpressionsMenu.Control.Parameter() { name = $"GenInventorySlot{i}" },
-                    type = VRCExpressionsMenu.Control.ControlType.Toggle,
-                    value = 1,
-                });
+                    AssetDatabase.CopyAsset(AssetDatabase.GetAssetPath(basisMenu), menuPath);
+                    menuAsset = AssetDatabase.LoadAssetAtPath<VRCExpressionsMenu>(menuPath);
+                }
+                else
+                {
+                    menuAsset = ScriptableObject.CreateInstance<VRCExpressionsMenu>();
+                    AssetDatabase.CreateAsset(menuAsset, menuPath);
+                }
+                
+                int offset = menuNum * 8;
+                if (offset >= inventorySlots.Length)
+                    break;
+
+                for (int i = 0; i < 8; ++i)
+                {
+                    if (i + offset >= inventorySlots.Length)
+                        break;
+                    menuAsset.controls.Add(new VRCExpressionsMenu.Control()
+                    {
+                        icon = inventorySlots[i+offset].slotIcon,
+                        name = inventorySlots[i+offset].slotName,
+                        parameter = new VRCExpressionsMenu.Control.Parameter() { name = $"GenInventorySlot{i+offset}" },
+                        type = VRCExpressionsMenu.Control.ControlType.Toggle,
+                        value = 1,
+                    });
+                }
             }
 
             // Generate controller
@@ -134,6 +142,7 @@ namespace Merlin
             }
 
             AnimationClip[] inventoryClips = new AnimationClip[inventorySlots.Length];
+            AnimationClip[] inventoryResetClips = new AnimationClip[inventorySlots.Length];
             
             // Generate layer mask
             AvatarMask maskEverything = new AvatarMask();
@@ -149,26 +158,31 @@ namespace Merlin
                 InventorySlot slot = inventorySlots[i];
 
                 // Set initial object state
-                foreach (GameObject toggleObject in slot.slotToggleItems)
-                    if (toggleObject)
-                        toggleObject.SetActive(slot.startEnabled);
+                // foreach (GameObject toggleObject in slot.slotToggleItems)
+                //     if (toggleObject)
+                //         toggleObject.SetActive(slot.startEnabled);
 
                 string animationClipPath = $"{generatedDirPath}/Animations/_toggle{i}.anim";
                 AnimationClip toggleClip = GenerateToggleClip(slot.slotToggleItems, !slot.startEnabled);
+                AnimationClip resetClip = GenerateToggleClip(slot.slotToggleItems, slot.startEnabled);
 
                 //AssetDatabase.CreateAsset(toggleClip, animationClipPath);
 
                 inventoryClips[i] = toggleClip;
+                inventoryResetClips[i] = resetClip;
 
                 toggleClip.name = $"toggleAnim{i}";
                 AssetDatabase.AddObjectToAsset(toggleClip, controller);
+
+                resetClip.name = $"resetAnim{i}";
+                AssetDatabase.AddObjectToAsset(resetClip, controller);
             }
 
             // Generate controller layers
             for (int i = 0; i < inventorySlots.Length; ++i)
             {
                 string paramName = $"GenInventorySlot{i}";
-                controller.AddParameter(paramName, AnimatorControllerParameterType.Int);
+                controller.AddParameter(paramName, AnimatorControllerParameterType.Bool);
 
                 string layerName = $"GenToggleLayer{i}";
 
@@ -187,6 +201,7 @@ namespace Merlin
 
                 AnimatorState nullState = stateMachine.AddState("Null State", stateMachine.entryPosition + new Vector3(200f, 0f));
                 AnimatorState toggleState = stateMachine.AddState("Toggle Triggered", stateMachine.entryPosition + new Vector3(500f, 0f));
+                nullState.motion = inventoryResetClips[i];
                 toggleState.motion = inventoryClips[i];
                 
                 AnimatorStateTransition toToggle = nullState.AddTransition(toggleState);
@@ -201,8 +216,8 @@ namespace Merlin
                 toNull.hasFixedDuration = true;
                 toNull.duration = 0f;
 
-                toToggle.AddCondition(AnimatorConditionMode.Greater, 0f, paramName);
-                toNull.AddCondition(AnimatorConditionMode.Equals, 0f, paramName);
+                toToggle.AddCondition(AnimatorConditionMode.If, 0f, paramName);
+                toNull.AddCondition(AnimatorConditionMode.IfNot, 0f, paramName);
 
                 controller.AddLayer(toggleLayer);
             }
@@ -210,7 +225,7 @@ namespace Merlin
             // Setup layers on the avatar descriptor
             VRCAvatarDescriptor descriptor = GetComponent<VRCAvatarDescriptor>();
 
-            descriptor.expressionsMenu = menuAsset;
+            // descriptor.expressionsMenu = menuAsset;
             descriptor.expressionParameters = inventoryStageParams;
 
             VRCAvatarDescriptor.CustomAnimLayer layer = new VRCAvatarDescriptor.CustomAnimLayer();
